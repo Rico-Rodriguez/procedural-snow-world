@@ -1,5 +1,6 @@
 import "./styles.css";
 import { SnowAudio } from "./audio/snow-audio";
+import { isTouchInputCapable, normalizeTouchStick } from "./input/touch-controls";
 import { SnowWorldView } from "./presentation/snow-world-view";
 import { SnowSimulation, type SnowTool, type WeatherState } from "./simulation/snow-simulation";
 import { hasSavedWorld, loadWorld, saveWorld, type WorldSave } from "./platform/storage";
@@ -7,6 +8,8 @@ import { generateWorld } from "./world/generator";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Application root is missing.");
+const touchCapable = isTouchInputCapable();
+document.documentElement.classList.toggle("touch-capable", touchCapable);
 
 app.innerHTML = `
   <main class="game-shell">
@@ -58,7 +61,7 @@ app.innerHTML = `
       <div><small>CHUNK</small><strong id="chunk-readout">+00 / +00</strong></div>
     </section>
 
-    <aside class="drawer glass-panel hud-layer" id="weather-drawer" aria-label="Weather controls" aria-hidden="true">
+    <aside class="drawer glass-panel hud-layer" id="weather-drawer" role="dialog" aria-modal="true" aria-label="Weather controls" aria-hidden="true" inert>
       <div class="drawer-heading">
         <div><span class="panel-eyebrow">REGIONAL SYSTEM</span><h2>Weather</h2></div>
         <button class="drawer-close" data-close="weather-drawer" aria-label="Close weather">×</button>
@@ -75,7 +78,7 @@ app.innerHTML = `
       <p class="drawer-note">Physical deposition is fixed-step and independent from the number of visual flakes.</p>
     </aside>
 
-    <aside class="diagnostics glass-panel hud-layer" id="diagnostics-panel" aria-label="Simulation diagnostics" aria-hidden="true">
+    <aside class="diagnostics glass-panel hud-layer" id="diagnostics-panel" role="dialog" aria-modal="true" aria-label="Simulation diagnostics" aria-hidden="true" inert>
       <div class="diagnostic-header">
         <div><span class="panel-eyebrow"><span class="live-dot"></span> SIMULATION HEALTH</span><h2>Mass ledger</h2></div>
         <button class="drawer-close" data-close="diagnostics-panel" aria-label="Close diagnostics">×</button>
@@ -97,7 +100,11 @@ app.innerHTML = `
       <div class="backend-row"><span id="backend-indicator" class="backend-dot"></span><span id="backend-readout">GPU probing…</span><b id="fps-readout">-- FPS</b></div>
     </aside>
 
-    <div class="pointer-prompt glass-panel hud-layer" id="pointer-prompt"><span class="mouse-glyph">◉</span><span>Click world to look around</span></div>
+    <div class="pointer-prompt glass-panel hud-layer" id="pointer-prompt">
+      <span class="mouse-glyph" aria-hidden="true">◉</span>
+      <span class="desktop-control-copy">Click world to look around</span>
+      <span class="mobile-control-copy">Drag open snow to look</span>
+    </div>
 
     <div class="reticle hud-layer" id="reticle" aria-hidden="true"><span></span><i></i></div>
     <div class="brush-readout glass-panel hud-layer" id="brush-readout"><span id="tool-action-label">Remove & carry</span><b id="brush-radius-label">0.75 m</b></div>
@@ -119,6 +126,24 @@ app.innerHTML = `
       <div><small>LOOSE SNOW</small><strong id="carry-readout">0.00 kg</strong></div>
       <span class="carry-track"><i id="carry-track-fill"></i></span>
     </div>
+
+    <section class="mobile-controls hud-layer" aria-label="Touch controls">
+      <div class="move-control" id="move-control">
+        <div class="joystick-base" id="joystick-base" role="group" aria-label="Move; push to the edge to run">
+          <span class="joystick-arrows" aria-hidden="true">‹&nbsp;&nbsp;›</span>
+          <span class="joystick-knob" id="joystick-knob"></span>
+        </div>
+        <span class="mobile-control-caption">MOVE <i>EDGE TO RUN</i></span>
+      </div>
+      <div class="mobile-actions">
+        <button class="mobile-action-button grab-action" id="mobile-grab-button" type="button" aria-label="Grab or place snowball">
+          <span aria-hidden="true">◇</span><strong id="mobile-grab-label">Grab</strong>
+        </button>
+        <button class="mobile-action-button primary-action" id="mobile-use-button" type="button" aria-label="Use selected snow tool">
+          <span aria-hidden="true">⌖</span><strong id="mobile-use-label">Use</strong><small id="mobile-use-detail">Dig</small>
+        </button>
+      </div>
+    </section>
 
     <div class="toast-stack hud-layer" id="toast-stack" aria-live="polite"></div>
 
@@ -160,19 +185,25 @@ app.innerHTML = `
       </div>
     </section>
 
-    <section class="modal-layer guide-layer hidden" id="guide-layer" aria-label="Field guide">
+    <section class="modal-layer guide-layer hidden" id="guide-layer" role="dialog" aria-modal="true" aria-label="Field guide" aria-hidden="true">
       <div class="guide-card glass-panel">
         <button class="modal-close" id="guide-close" aria-label="Close field guide">×</button>
         <span class="panel-eyebrow">FIELD GUIDE / SNOW LAB 01</span>
         <h2>Leave evidence.</h2>
         <p>Walk through deep powder to make persistent tracks. Aim at the surface and choose a material operation.</p>
+        <div class="touch-guide" aria-label="Touch controls">
+          <article><span>01</span><b>Move</b><small>Push the left stick. Reach its edge to run.</small></article>
+          <article><span>02</span><b>Look</b><small>Drag any open part of the snow scene.</small></article>
+          <article><span>03</span><b>Use</b><small>Hold the large action button to shape snow.</small></article>
+          <article><span>04</span><b>Grab</b><small>Pick up, place, then use again to throw.</small></article>
+        </div>
         <div class="guide-grid">
           <article><kbd>1</kbd><h3>Dig</h3><p>Removes snow into your loose-snow reserve. Nothing is silently deleted.</p></article>
           <article><kbd>2</kbd><h3>Pack</h3><p>Raises density and hardness. The surface lowers as the same mass compacts.</p></article>
           <article><kbd>3</kbd><h3>Deposit</h3><p>Returns carried mass to the surface to build banks, ramps and forms.</p></article>
           <article><kbd>4</kbd><h3>Smooth</h3><p>Conservatively redistributes nearby snow into a softer surface.</p></article>
-          <article><kbd>5</kbd><h3>Roll</h3><p>Collects real ground snow into a growing ball. Use <b>E</b> to grab or stack it.</p></article>
-          <article><kbd>⌁</kbd><h3>Throw</h3><p>Grab a snowball, then click. Impact energy decides how much breaks back into the field.</p></article>
+          <article><kbd>5</kbd><h3>Roll</h3><p>Collects real ground snow into a growing ball. Grab it to carry or stack it.</p></article>
+          <article><kbd>⌁</kbd><h3>Throw</h3><p>Grab a snowball, then use your primary action. Impact energy decides how much breaks back into the field.</p></article>
         </div>
         <div class="guide-callout"><span>TIP</span> Stack three placed snowballs and the construction recognizer will finish your snowman.</div>
       </div>
@@ -206,6 +237,8 @@ let timeOfDay = 0.32;
 let selectedQuality = 1;
 let currentSave: WorldSave | null = null;
 let gameLoopHandle = 0;
+let holdingSnowball = false;
+let resetTouchControls = (): void => view?.setMoveInput(0, 0, false);
 let weather: WeatherState = { snowfallRate: 0.62, airTemperature: -7, windX: 0.42, windZ: 0.12, gustiness: 0.35 };
 
 const toolCopy: Record<SnowTool, { action: string; toast: string }> = {
@@ -239,17 +272,64 @@ function toast(message: string, tone: "default" | "success" | "warning" = "defau
   }, 2600);
 }
 
+function interfaceIsOpen(): boolean {
+  return !guideLayer.classList.contains("hidden") || Boolean(document.querySelector(".drawer.open, .diagnostics.open"));
+}
+
+function updateInputGate(): void {
+  const blocked = interfaceIsOpen();
+  document.body.classList.toggle("ui-open", blocked);
+  view?.setInputEnabled(!blocked);
+  if (blocked) resetTouchControls();
+}
+
 function openPanel(id: string): void {
   document.exitPointerLock?.();
+  document.querySelectorAll<HTMLElement>(".drawer.open, .diagnostics.open").forEach((open) => {
+    open.classList.remove("open");
+    open.setAttribute("aria-hidden", "true");
+    open.setAttribute("inert", "");
+  });
+  guideLayer.classList.add("hidden");
+  guideLayer.setAttribute("aria-hidden", "true");
   const panel = byId(id);
   panel.classList.add("open");
   panel.setAttribute("aria-hidden", "false");
+  panel.removeAttribute("inert");
+  updateInputGate();
+  panel.querySelector<HTMLButtonElement>(".drawer-close")?.focus({ preventScroll: true });
 }
 
 function closePanel(id: string): void {
   const panel = byId(id);
   panel.classList.remove("open");
   panel.setAttribute("aria-hidden", "true");
+  panel.setAttribute("inert", "");
+  updateInputGate();
+}
+
+function openGuide(): void {
+  document.exitPointerLock?.();
+  document.querySelectorAll<HTMLElement>(".drawer.open, .diagnostics.open").forEach((panel) => closePanel(panel.id));
+  guideLayer.classList.remove("hidden");
+  guideLayer.setAttribute("aria-hidden", "false");
+  updateInputGate();
+  byId<HTMLButtonElement>("guide-close").focus({ preventScroll: true });
+}
+
+function closeGuide(): void {
+  guideLayer.classList.add("hidden");
+  guideLayer.setAttribute("aria-hidden", "true");
+  updateInputGate();
+}
+
+function updateMobileGrabState(holding: boolean): void {
+  holdingSnowball = holding;
+  byId("mobile-grab-label").textContent = holding ? "Place" : "Grab";
+  byId("mobile-use-label").textContent = holding ? "Throw" : "Use";
+  byId("mobile-use-detail").textContent = holding ? "Snowball" : currentTool[0].toUpperCase() + currentTool.slice(1);
+  byId("mobile-grab-button").setAttribute("aria-label", holding ? "Place held snowball" : "Grab nearby snowball");
+  byId("mobile-use-button").setAttribute("aria-label", holding ? "Throw held snowball" : `Use ${currentTool} tool`);
 }
 
 function setTool(tool: SnowTool, announce = true): void {
@@ -261,6 +341,10 @@ function setTool(tool: SnowTool, announce = true): void {
   });
   byId("tool-action-label").textContent = toolCopy[tool].action;
   byId("reticle").dataset.tool = tool;
+  if (!holdingSnowball) {
+    byId("mobile-use-detail").textContent = tool[0].toUpperCase() + tool.slice(1);
+    byId("mobile-use-button").setAttribute("aria-label", `Use ${tool} tool`);
+  }
   if (announce) toast(toolCopy[tool].toast);
 }
 
@@ -411,8 +495,11 @@ async function startWorld(save: WorldSave | null): Promise<void> {
           audio.play("compact", sample?.wetness ?? 0.05, sample?.hardness ?? 0.1, 0.45);
         },
         onPointerLockChange: (locked) => byId("pointer-prompt").classList.toggle("hidden", locked),
+        onTouchLookStart: () => byId("pointer-prompt").classList.add("hidden"),
+        onGrabStateChange: updateMobileGrabState,
         onAimChange: updateSample,
       });
+      view.setInputEnabled(false);
       if (save) {
         view.setPlayerState(save.player);
         view.restoreSnowballs(save.snowballs);
@@ -438,6 +525,7 @@ async function startWorld(save: WorldSave | null): Promise<void> {
   loadingLayer.classList.remove("leaving");
   document.body.classList.add("in-world");
   view?.start();
+  view?.setInputEnabled(true);
   startSimulationLoop();
   updateHud();
   toast(save ? "Saved survey restored" : `Field ${worldSeedText} generated`, "success");
@@ -493,9 +581,99 @@ async function persistWorld(): Promise<void> {
   }
 }
 
+function bindTouchControls(): void {
+  const joystick = byId<HTMLElement>("joystick-base");
+  const knob = byId<HTMLElement>("joystick-knob");
+  const primaryButton = byId<HTMLButtonElement>("mobile-use-button");
+  const grabButton = byId<HTMLButtonElement>("mobile-grab-button");
+  let stickPointerId: number | null = null;
+  let primaryPointerId: number | null = null;
+
+  const updateStick = (event: PointerEvent): void => {
+    const rect = joystick.getBoundingClientRect();
+    const radius = Math.max(32, rect.width * 0.36);
+    const state = normalizeTouchStick(event.clientX - (rect.left + rect.width * 0.5), event.clientY - (rect.top + rect.height * 0.5), radius);
+    knob.style.transform = `translate(${state.visualX}px, ${state.visualY}px)`;
+    joystick.classList.toggle("running", state.sprint);
+    view?.setMoveInput(state.forward, state.right, state.sprint);
+  };
+
+  const resetStick = (): void => {
+    const pointerId = stickPointerId;
+    stickPointerId = null;
+    if (pointerId !== null && joystick.hasPointerCapture(pointerId)) joystick.releasePointerCapture(pointerId);
+    knob.style.transform = "translate(0, 0)";
+    joystick.classList.remove("running");
+    view?.setMoveInput(0, 0, false);
+  };
+
+  const releasePrimary = (): void => {
+    const pointerId = primaryPointerId;
+    primaryPointerId = null;
+    if (pointerId !== null && primaryButton.hasPointerCapture(pointerId)) primaryButton.releasePointerCapture(pointerId);
+    primaryButton.classList.remove("pressed");
+    view?.setPrimaryAction(false);
+  };
+
+  resetTouchControls = () => {
+    resetStick();
+    releasePrimary();
+  };
+
+  joystick.addEventListener("pointerdown", (event) => {
+    if (stickPointerId !== null || !view) return;
+    event.preventDefault();
+    audio.ensureStarted();
+    stickPointerId = event.pointerId;
+    joystick.setPointerCapture(event.pointerId);
+    updateStick(event);
+  });
+  joystick.addEventListener("pointermove", (event) => {
+    if (event.pointerId !== stickPointerId) return;
+    event.preventDefault();
+    updateStick(event);
+  });
+  for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
+    joystick.addEventListener(eventName, (event) => {
+      if (event.pointerId === stickPointerId) resetStick();
+    });
+  }
+
+  primaryButton.addEventListener("pointerdown", (event) => {
+    if (primaryPointerId !== null || !view) return;
+    event.preventDefault();
+    audio.ensureStarted();
+    primaryPointerId = event.pointerId;
+    primaryButton.setPointerCapture(event.pointerId);
+    primaryButton.classList.add("pressed");
+    const result = view.setPrimaryAction(true);
+    if (result === "thrown") audio.play("throw", 0.05, 0.2, 0.7);
+  });
+  for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
+    primaryButton.addEventListener(eventName, (event) => {
+      if (event.pointerId === primaryPointerId) releasePrimary();
+    });
+  }
+
+  grabButton.addEventListener("click", () => {
+    audio.ensureStarted();
+    const result = view?.toggleGrab() ?? "none";
+    if (result === "grabbed") toast("Snowball in hand — place it or throw it", "success");
+    if (result === "placed") toast("Snowball placed", "success");
+    if (result === "none") toast("Move closer to a snowball", "warning");
+  });
+}
+
 function bindInterface(): void {
-  enterButton.addEventListener("click", () => void startWorld(null));
-  continueButton.addEventListener("click", () => void startWorld(currentSave));
+  bindTouchControls();
+  enterButton.addEventListener("click", () => {
+    audio.ensureStarted();
+    void startWorld(null);
+  });
+  continueButton.addEventListener("click", () => {
+    audio.ensureStarted();
+    void startWorld(currentSave);
+  });
   byId("random-seed").addEventListener("click", () => {
     const north = ["AURORA", "RIME", "EMBER", "TUNDRA", "POLAR", "MICA", "SILVER"];
     const land = ["BASIN", "RIDGE", "HOLLOW", "FIELD", "PASS", "DRIFT", "VALE"];
@@ -512,11 +690,8 @@ function bindInterface(): void {
   byId("save-button").addEventListener("click", () => void persistWorld());
   byId("weather-button").addEventListener("click", () => openPanel("weather-drawer"));
   byId("diagnostics-button").addEventListener("click", () => openPanel("diagnostics-panel"));
-  byId("help-button").addEventListener("click", () => {
-    document.exitPointerLock?.();
-    guideLayer.classList.remove("hidden");
-  });
-  byId("guide-close").addEventListener("click", () => guideLayer.classList.add("hidden"));
+  byId("help-button").addEventListener("click", openGuide);
+  byId("guide-close").addEventListener("click", closeGuide);
   document.querySelectorAll<HTMLButtonElement>("[data-close]").forEach((button) => button.addEventListener("click", () => closePanel(button.dataset.close ?? "")));
 
   const snowfallControl = byId<HTMLInputElement>("snowfall-control");
@@ -554,29 +729,35 @@ function bindInterface(): void {
 
   window.addEventListener("keydown", (event) => {
     const target = event.target as HTMLElement;
+    if (event.code === "Escape" && interfaceIsOpen()) {
+      document.querySelectorAll<HTMLElement>(".drawer.open, .diagnostics.open").forEach((panel) => closePanel(panel.id));
+      if (!guideLayer.classList.contains("hidden")) closeGuide();
+      return;
+    }
     if (target.matches("input, textarea")) return;
     const shortcuts: Record<string, SnowTool> = { Digit1: "dig", Digit2: "compact", Digit3: "deposit", Digit4: "smooth", Digit5: "roll" };
     if (shortcuts[event.code]) setTool(shortcuts[event.code], false);
-    if (event.code === "KeyH") {
-      document.exitPointerLock?.();
-      guideLayer.classList.remove("hidden");
-    }
+    if (event.code === "KeyH") openGuide();
   });
   window.addEventListener("resize", () => view?.resize());
+  window.addEventListener("orientationchange", () => view?.resize());
+  window.visualViewport?.addEventListener("resize", () => view?.resize());
+  window.addEventListener("blur", resetTouchControls);
   window.addEventListener("beforeunload", () => cancelAnimationFrame(gameLoopHandle));
 }
 
 async function initializeLanding(): Promise<void> {
   bindInterface();
   const capabilityChip = byId("capability-chip");
+  if (touchCapable) selectedQuality = 0.56;
   if ("gpu" in navigator) {
     capabilityChip.innerHTML = `<i></i> WebGPU available`;
     capabilityChip.classList.add("ready");
-    selectedQuality = Math.min(1.2, window.devicePixelRatio > 1.5 ? 0.9 : 1);
+    if (!touchCapable) selectedQuality = Math.min(1.2, window.devicePixelRatio > 1.5 ? 0.9 : 1);
   } else {
     capabilityChip.innerHTML = `<i></i> WebGL fallback`;
     capabilityChip.classList.add("fallback");
-    selectedQuality = 0.72;
+    if (!touchCapable) selectedQuality = 0.72;
   }
   try {
     if (await hasSavedWorld()) {

@@ -25,6 +25,7 @@ import {
   VertexData,
   WebGPUEngine,
 } from "@babylonjs/core";
+import { isTouchInputCapable } from "../input/touch-controls";
 import type { SnowSimulation, WeatherState } from "../simulation/snow-simulation";
 import { deterministicPoints, sampleGeneratedWorld, type GeneratedWorld } from "../world/generator";
 
@@ -44,6 +45,8 @@ export interface ViewCallbacks {
   onBallImpact: (x: number, z: number, requestedMass: number, energy: number) => number;
   onBallGathered: (mass: number) => void;
   onPointerLockChange: (locked: boolean) => void;
+  onTouchLookStart: () => void;
+  onGrabStateChange: (holding: boolean) => void;
   onAimChange: (x: number, z: number, valid: boolean) => void;
 }
 
@@ -82,6 +85,7 @@ export class SnowWorldView {
   private readonly keys = new Set<string>();
   private readonly snowballs: SnowballVisual[] = [];
   private readonly snowmen = new Set<string>();
+  private readonly touchCapable = isTouchInputCapable();
   private weather: WeatherState = { snowfallRate: 0.62, airTemperature: -7, windX: 0.42, windZ: 0.12, gustiness: 0.35 };
   private yaw = 0.55;
   private pitch = -0.08;
@@ -96,6 +100,14 @@ export class SnowWorldView {
   private nextBallId = 1;
   private destroyed = false;
   private lastAim = { x: 0, z: 0, valid: false };
+  private mobileForward = 0;
+  private mobileRight = 0;
+  private mobileSprint = false;
+  private inputEnabled = true;
+  private lookPointerId: number | null = null;
+  private lastLookX = 0;
+  private lastLookY = 0;
+  private particleQuality = 1;
 
   private constructor(
     canvas: HTMLCanvasElement,
@@ -173,6 +185,8 @@ export class SnowWorldView {
     } catch {
       engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: true, adaptToDeviceRatio: true });
     }
+    const maximumPixelRatio = isTouchInputCapable() ? 1.35 : 2;
+    engine.setHardwareScalingLevel(Math.max(1, window.devicePixelRatio / maximumPixelRatio));
     return new SnowWorldView(canvas, engine, backend, world, simulation, callbacks);
   }
 
@@ -224,7 +238,35 @@ export class SnowWorldView {
   }
 
   setParticleQuality(multiplier: number): void {
-    this.snowfall.emitRate = Math.round((180 + this.weather.snowfallRate * 1550) * multiplier);
+    this.particleQuality = Math.max(0.25, Math.min(1.2, multiplier));
+    this.snowfall.emitRate = Math.round((120 + this.weather.snowfallRate * 1650) * this.particleQuality);
+  }
+
+  setMoveInput(forward: number, right: number, sprint: boolean): void {
+    this.mobileForward = Math.max(-1, Math.min(1, forward));
+    this.mobileRight = Math.max(-1, Math.min(1, right));
+    this.mobileSprint = sprint;
+  }
+
+  setPrimaryAction(active: boolean): "using" | "thrown" | "idle" {
+    if (!this.inputEnabled) return "idle";
+    if (!active) {
+      this.interactionHeld = false;
+      return "idle";
+    }
+    if (this.throwHeldBall()) return "thrown";
+    this.interactionHeld = true;
+    this.triggerInteraction();
+    return "using";
+  }
+
+  setInputEnabled(enabled: boolean): void {
+    this.inputEnabled = enabled;
+    if (enabled) return;
+    this.keys.clear();
+    this.interactionHeld = false;
+    this.setMoveInput(0, 0, false);
+    this.releaseLookPointer();
   }
 
   getPlayerState(): { x: number; z: number; yaw: number } {
@@ -298,6 +340,7 @@ export class SnowWorldView {
   }
 
   toggleGrab(): "grabbed" | "placed" | "none" {
+    if (!this.inputEnabled) return "none";
     const held = this.snowballs.find((ball) => ball.held);
     if (held) {
       held.held = false;
@@ -310,6 +353,7 @@ export class SnowWorldView {
       this.placeOnSurfaceOrBall(held);
       this.activeBallId = held.id;
       this.recognizeSnowmen();
+      this.callbacks.onGrabStateChange(false);
       return "placed";
     }
     const candidate = this.findGrabbableBall();
@@ -318,6 +362,7 @@ export class SnowWorldView {
     candidate.placed = false;
     candidate.velocity.setAll(0);
     this.activeBallId = candidate.id;
+    this.callbacks.onGrabStateChange(true);
     return "grabbed";
   }
 
@@ -331,6 +376,7 @@ export class SnowWorldView {
     ball.velocity.y += 2.4;
     ball.impactCooldown = 0.12;
     this.activeBallId = ball.id;
+    this.callbacks.onGrabStateChange(false);
     return true;
   }
 
@@ -534,7 +580,7 @@ export class SnowWorldView {
 
   private createSnowfall(): ParticleSystem {
     const texture = this.makeFlakeTexture("flake-texture", false);
-    const particles = new ParticleSystem("falling-snow", 9000, this.scene);
+    const particles = new ParticleSystem("falling-snow", this.touchCapable ? 4800 : 9000, this.scene);
     particles.particleTexture = texture;
     particles.emitter = new Vector3(0, 13, 0);
     particles.minEmitBox = new Vector3(-24, -2, -24);
@@ -560,7 +606,7 @@ export class SnowWorldView {
 
   private createPowder(): ParticleSystem {
     const texture = this.makeFlakeTexture("powder-texture", true);
-    const particles = new ParticleSystem("powder-bursts", 1600, this.scene);
+    const particles = new ParticleSystem("powder-bursts", this.touchCapable ? 900 : 1600, this.scene);
     particles.particleTexture = texture;
     particles.emitter = Vector3.Zero();
     particles.manualEmitCount = 0;
@@ -596,23 +642,24 @@ export class SnowWorldView {
   }
 
   private installInput(): void {
-    this.canvas.addEventListener("click", () => {
-      if (document.pointerLockElement !== this.canvas) void this.canvas.requestPointerLock();
+    this.canvas.addEventListener("click", (event) => {
+      if (!this.inputEnabled || event instanceof PointerEvent && event.pointerType === "touch") return;
+      if (!window.matchMedia("(any-hover: hover) and (any-pointer: fine)").matches) return;
+      if (document.pointerLockElement !== this.canvas) void this.canvas.requestPointerLock().catch(() => undefined);
     });
     document.addEventListener("pointerlockchange", () => this.callbacks.onPointerLockChange(document.pointerLockElement === this.canvas));
     document.addEventListener("mousemove", (event) => {
-      if (document.pointerLockElement !== this.canvas) return;
-      this.yaw += event.movementX * 0.00185;
-      this.pitch = Math.max(-1.22, Math.min(1.22, this.pitch + event.movementY * 0.00165));
-      this.camera.rotation.set(this.pitch, this.yaw, 0);
+      if (!this.inputEnabled || document.pointerLockElement !== this.canvas) return;
+      this.applyLookDelta(event.movementX, event.movementY, 0.00185);
     });
     window.addEventListener("keydown", (event) => {
+      if (!this.inputEnabled) return;
       this.keys.add(event.code);
       if (event.code === "KeyE" && !event.repeat) this.toggleGrab();
     });
     window.addEventListener("keyup", (event) => this.keys.delete(event.code));
     this.canvas.addEventListener("mousedown", (event) => {
-      if (event.button !== 0) return;
+      if (!this.inputEnabled || event.button !== 0) return;
       if (this.throwHeldBall()) return;
       this.interactionHeld = true;
       this.triggerInteraction();
@@ -621,12 +668,60 @@ export class SnowWorldView {
       if (event.button === 0) this.interactionHeld = false;
     });
     this.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    this.canvas.addEventListener("pointerdown", (event) => {
+      if (!this.inputEnabled || event.pointerType !== "touch" || this.lookPointerId !== null) return;
+      event.preventDefault();
+      this.lookPointerId = event.pointerId;
+      this.lastLookX = event.clientX;
+      this.lastLookY = event.clientY;
+      this.canvas.setPointerCapture(event.pointerId);
+      this.callbacks.onTouchLookStart();
+    });
+    this.canvas.addEventListener("pointermove", (event) => {
+      if (!this.inputEnabled || event.pointerId !== this.lookPointerId) return;
+      event.preventDefault();
+      const deltaX = event.clientX - this.lastLookX;
+      const deltaY = event.clientY - this.lastLookY;
+      this.lastLookX = event.clientX;
+      this.lastLookY = event.clientY;
+      this.applyLookDelta(deltaX, deltaY, 0.0042);
+    });
+    for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
+      this.canvas.addEventListener(eventName, (event) => {
+        if (event.pointerId === this.lookPointerId) this.releaseLookPointer();
+      });
+    }
+    window.addEventListener("blur", () => this.resetTransientInput());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.resetTransientInput();
+    });
+  }
+
+  private applyLookDelta(deltaX: number, deltaY: number, sensitivity: number): void {
+    this.yaw += deltaX * sensitivity;
+    this.pitch = Math.max(-1.22, Math.min(1.22, this.pitch + deltaY * sensitivity * 0.9));
+    this.camera.rotation.set(this.pitch, this.yaw, 0);
+  }
+
+  private releaseLookPointer(): void {
+    const pointerId = this.lookPointerId;
+    this.lookPointerId = null;
+    if (pointerId !== null && this.canvas.hasPointerCapture(pointerId)) this.canvas.releasePointerCapture(pointerId);
+  }
+
+  private resetTransientInput(): void {
+    this.keys.clear();
+    this.interactionHeld = false;
+    this.setMoveInput(0, 0, false);
+    this.releaseLookPointer();
   }
 
   private updatePlayer(dt: number): void {
-    const forwardInput = (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) - (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
-    const rightInput = (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) - (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
-    const sprinting = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    const keyboardForward = (this.keys.has("KeyW") || this.keys.has("ArrowUp") ? 1 : 0) - (this.keys.has("KeyS") || this.keys.has("ArrowDown") ? 1 : 0);
+    const keyboardRight = (this.keys.has("KeyD") || this.keys.has("ArrowRight") ? 1 : 0) - (this.keys.has("KeyA") || this.keys.has("ArrowLeft") ? 1 : 0);
+    const forwardInput = this.inputEnabled ? Math.max(-1, Math.min(1, keyboardForward + this.mobileForward)) : 0;
+    const rightInput = this.inputEnabled ? Math.max(-1, Math.min(1, keyboardRight + this.mobileRight)) : 0;
+    const sprinting = this.inputEnabled && (this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") || this.mobileSprint);
     const input = new Vector3(
       Math.sin(this.yaw) * forwardInput + Math.cos(this.yaw) * rightInput,
       0,
@@ -703,7 +798,7 @@ export class SnowWorldView {
   private updateWeatherPresentation(): void {
     const cameraPosition = this.camera.position;
     this.snowfall.emitter = new Vector3(cameraPosition.x, cameraPosition.y + 9, cameraPosition.z);
-    this.snowfall.emitRate = 120 + this.weather.snowfallRate * 1650;
+    this.snowfall.emitRate = Math.round((120 + this.weather.snowfallRate * 1650) * this.particleQuality);
     const gust = 1 + Math.sin(this.elapsed * 0.73) * this.weather.gustiness * 0.35;
     this.snowfall.gravity.set(this.weather.windX * gust * 0.7, -0.54, this.weather.windZ * gust * 0.7);
     this.scene.fogDensity = 0.0068 + this.weather.snowfallRate * 0.0052;
