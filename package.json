@@ -1,0 +1,21 @@
+{
+  "name": "procedural-snow-world",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "test": "vitest run",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@babylonjs/core": "8.26.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.13",
+    "typescript": "5.8.3",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  }
+}
