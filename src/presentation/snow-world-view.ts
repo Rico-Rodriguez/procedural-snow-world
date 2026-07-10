@@ -25,7 +25,6 @@ import {
   VertexData,
   WebGPUEngine,
 } from "@babylonjs/core";
-import { isTouchInputCapable } from "../input/touch-controls";
 import type { SnowSimulation, WeatherState } from "../simulation/snow-simulation";
 import { deterministicPoints, sampleGeneratedWorld, type GeneratedWorld } from "../world/generator";
 
@@ -85,7 +84,6 @@ export class SnowWorldView {
   private readonly keys = new Set<string>();
   private readonly snowballs: SnowballVisual[] = [];
   private readonly snowmen = new Set<string>();
-  private readonly touchCapable = isTouchInputCapable();
   private weather: WeatherState = { snowfallRate: 0.62, airTemperature: -7, windX: 0.42, windZ: 0.12, gustiness: 0.35 };
   private yaw = 0.55;
   private pitch = -0.08;
@@ -107,7 +105,6 @@ export class SnowWorldView {
   private lookPointerId: number | null = null;
   private lastLookX = 0;
   private lastLookY = 0;
-  private particleQuality = 1;
 
   private constructor(
     canvas: HTMLCanvasElement,
@@ -185,8 +182,6 @@ export class SnowWorldView {
     } catch {
       engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: true, adaptToDeviceRatio: true });
     }
-    const maximumPixelRatio = isTouchInputCapable() ? 1.35 : 2;
-    engine.setHardwareScalingLevel(Math.max(1, window.devicePixelRatio / maximumPixelRatio));
     return new SnowWorldView(canvas, engine, backend, world, simulation, callbacks);
   }
 
@@ -238,8 +233,7 @@ export class SnowWorldView {
   }
 
   setParticleQuality(multiplier: number): void {
-    this.particleQuality = Math.max(0.25, Math.min(1.2, multiplier));
-    this.snowfall.emitRate = Math.round((120 + this.weather.snowfallRate * 1650) * this.particleQuality);
+    this.snowfall.emitRate = Math.round((180 + this.weather.snowfallRate * 1550) * multiplier);
   }
 
   setMoveInput(forward: number, right: number, sprint: boolean): void {
@@ -580,7 +574,7 @@ export class SnowWorldView {
 
   private createSnowfall(): ParticleSystem {
     const texture = this.makeFlakeTexture("flake-texture", false);
-    const particles = new ParticleSystem("falling-snow", this.touchCapable ? 4800 : 9000, this.scene);
+    const particles = new ParticleSystem("falling-snow", 9000, this.scene);
     particles.particleTexture = texture;
     particles.emitter = new Vector3(0, 13, 0);
     particles.minEmitBox = new Vector3(-24, -2, -24);
@@ -606,7 +600,7 @@ export class SnowWorldView {
 
   private createPowder(): ParticleSystem {
     const texture = this.makeFlakeTexture("powder-texture", true);
-    const particles = new ParticleSystem("powder-bursts", this.touchCapable ? 900 : 1600, this.scene);
+    const particles = new ParticleSystem("powder-bursts", 1600, this.scene);
     particles.particleTexture = texture;
     particles.emitter = Vector3.Zero();
     particles.manualEmitCount = 0;
@@ -798,7 +792,7 @@ export class SnowWorldView {
   private updateWeatherPresentation(): void {
     const cameraPosition = this.camera.position;
     this.snowfall.emitter = new Vector3(cameraPosition.x, cameraPosition.y + 9, cameraPosition.z);
-    this.snowfall.emitRate = Math.round((120 + this.weather.snowfallRate * 1650) * this.particleQuality);
+    this.snowfall.emitRate = 120 + this.weather.snowfallRate * 1650;
     const gust = 1 + Math.sin(this.elapsed * 0.73) * this.weather.gustiness * 0.35;
     this.snowfall.gravity.set(this.weather.windX * gust * 0.7, -0.54, this.weather.windZ * gust * 0.7);
     this.scene.fogDensity = 0.0068 + this.weather.snowfallRate * 0.0052;

@@ -749,15 +749,14 @@ function bindInterface(): void {
 async function initializeLanding(): Promise<void> {
   bindInterface();
   const capabilityChip = byId("capability-chip");
-  if (touchCapable) selectedQuality = 0.56;
   if ("gpu" in navigator) {
     capabilityChip.innerHTML = `<i></i> WebGPU available`;
     capabilityChip.classList.add("ready");
-    if (!touchCapable) selectedQuality = Math.min(1.2, window.devicePixelRatio > 1.5 ? 0.9 : 1);
+    selectedQuality = Math.min(1.2, window.devicePixelRatio > 1.5 ? 0.9 : 1);
   } else {
     capabilityChip.innerHTML = `<i></i> WebGL fallback`;
     capabilityChip.classList.add("fallback");
-    if (!touchCapable) selectedQuality = 0.72;
+    selectedQuality = 0.72;
   }
   try {
     if (await hasSavedWorld()) {
